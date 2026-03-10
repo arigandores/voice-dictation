@@ -75,7 +75,7 @@ uv pip install --reinstall torch torchaudio --index-url https://download.pytorch
 
 ```powershell
 # Обязательные
-uv pip install numpy sounddevice keyboard pyperclip httpx
+uv pip install numpy miniaudio keyboard pyperclip httpx
 
 # Движок распознавания — Whisper (рекомендуется)
 uv pip install faster-whisper
@@ -128,7 +128,7 @@ curl http://localhost:11434/api/tags
 ```powershell
 ~\whisper-env\Scripts\Activate.ps1
 cd voice-dictation
-python dictation.py
+python main.py
 ```
 
 При запуске появится маленький виджет в правом верхнем углу экрана. Модель загрузится за несколько секунд, после чего виджет покажет "Готов к записи".
@@ -227,11 +227,7 @@ uv pip install --reinstall torch torchaudio --index-url https://download.pytorch
 
 ### Микрофон не работает
 
-Проверь, какой микрофон используется:
-```powershell
-python -c "import sounddevice; print(sounddevice.query_devices())"
-```
-Устройство по умолчанию отмечено `>`. Если нужен другой — измени настройки звука Windows.
+Проверь настройки звука Windows — убедись, что нужный микрофон установлен устройством по умолчанию, или выбери его в настройках программы (правый клик → Настройки → Микрофон).
 
 ---
 
@@ -244,11 +240,29 @@ python -c "import sounddevice; print(sounddevice.query_devices())"
                                                текста           окно
 ```
 
-1. **Запись** — `sounddevice` захватывает аудио с микрофона (16 кГц, моно)
+1. **Запись** — `miniaudio` захватывает аудио с микрофона (16 кГц, моно)
 2. **Удаление тишины** (только Canary) — Silero VAD вырезает паузы
 3. **Распознавание** — Whisper или Canary обрабатывает аудио на GPU
 4. **Коррекция** (если включена) — LLM исправляет ошибки и расставляет пунктуацию
 5. **Вставка** — текст копируется в буфер обмена и вставляется через эмуляцию `Ctrl+V`
+
+### Структура проекта
+
+```
+main.py                  # Точка входа
+dictation/
+    config.py            # Константы и настройки
+    state.py             # Общее состояние (конфиг, локи, история)
+    vad.py               # Silero VAD (фильтрация тишины)
+    asr.py               # Движки распознавания (Whisper, Canary)
+    llm.py               # Коррекция через Ollama
+    audio.py             # Запись и пайплайн обработки
+    hotkeys.py           # Горячие клавиши
+    ui/
+        overlay.py       # Виджет статуса
+        history.py       # Окно истории
+        settings.py      # Окно настроек
+```
 
 ---
 
