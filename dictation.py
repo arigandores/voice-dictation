@@ -15,6 +15,7 @@ import sys
 import os
 import time
 import json
+import datetime
 import threading
 import queue
 import tempfile
@@ -43,6 +44,7 @@ DEFAULT_CONFIG = {
     "whisper_model": "large-v3",
     "llm_model": "qwen3.5:9b",
     "llm_enabled": True,
+    "input_device": None,           # None = system default
 }
 
 WHISPER_DEVICE = "cuda"
@@ -73,12 +75,30 @@ OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 SAMPLE_RATE = 16000
 CHANNELS = 1
 
-LLM_SYSTEM = (
-    "Ты корректор транскрипции голосового ввода. "
-    "Исправляй ошибки распознавания речи, расставляй знаки препинания и заглавные буквы. "
-    "IT-термины и англицизмы (API, Docker, git, pull request, deploy, endpoint и т.д.) пиши на английском. "
-    "Отвечай ТОЛЬКО исправленным текстом на русском языке. Никаких пояснений."
-)
+LLM_SYSTEM_TEMPLATES = {
+    "ru": (
+        "Ты корректор транскрипции голосового ввода. "
+        "Исправляй ошибки распознавания речи, расставляй знаки препинания и заглавные буквы. "
+        "IT-термины и англицизмы (API, Docker, git, pull request, deploy, endpoint и т.д.) пиши на английском. "
+        "Отвечай ТОЛЬКО исправленным текстом на русском языке. Никаких пояснений."
+    ),
+    "en": (
+        "You are a voice transcription corrector. "
+        "Fix speech recognition errors, add punctuation and capitalization. "
+        "Reply ONLY with the corrected text in English. No explanations."
+    ),
+    "default": (
+        "You are a voice transcription corrector. "
+        "Fix speech recognition errors, add punctuation and capitalization. "
+        "Keep the same language as the input. "
+        "Reply ONLY with the corrected text. No explanations."
+    ),
+}
+
+
+def get_llm_system():
+    lang = config.get("language", "auto")
+    return LLM_SYSTEM_TEMPLATES.get(lang, LLM_SYSTEM_TEMPLATES["default"])
 
 
 def load_config():
@@ -95,8 +115,32 @@ def load_config():
 
 
 def save_config(cfg):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+    tmp_path = CONFIG_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, CONFIG_PATH)
+
+
+def get_input_devices():
+    """Return list of (index, name) for WASAPI input devices only."""
+    devices = sd.query_devices()
+    hostapis = sd.query_hostapis()
+
+    # Find WASAPI hostapi index
+    wasapi_idx = None
+    for idx, api in enumerate(hostapis):
+        if "WASAPI" in api.get("name", ""):
+            wasapi_idx = idx
+            break
+
+    result = []
+    for i, d in enumerate(devices):
+        if d["max_input_channels"] > 0:
+            # Only WASAPI devices (fallback to all if WASAPI not found)
+            if wasapi_idx is not None and d.get("hostapi") != wasapi_idx:
+                continue
+            result.append((i, d["name"]))
+    return result
 
 
 def fetch_ollama_models():
@@ -133,7 +177,6 @@ MAX_HISTORY = 100
 
 
 def add_to_history(raw, corrected, backend, duration):
-    import datetime
     entry = {
         "time": datetime.datetime.now().strftime("%H:%M:%S"),
         "raw": raw,
@@ -238,7 +281,10 @@ class OverlayApp:
     def _make_info_text(self):
         hotkey = config["hotkey_record"].upper()
         backend = config.get("asr_backend", "whisper").capitalize()
-        llm = config.get("llm_model", "qwen3.5:9b")
+        if config.get("llm_enabled", True):
+            llm = config.get("llm_model", "qwen3.5:9b")
+        else:
+            llm = "LLM выкл"
         return f"{hotkey}  |  {backend}  |  {llm}"
 
     def set_status(self, status, extra=""):
@@ -300,6 +346,23 @@ class OverlayApp:
         SettingsWindow(self.root)
 
     def _quit(self):
+        self._shutdown()
+
+    def _shutdown(self):
+        """Graceful shutdown: unregister hotkeys, destroy tkinter, then exit."""
+        try:
+            for hid in _hotkey_ids:
+                try:
+                    keyboard.remove_hotkey(hid)
+                except (KeyError, ValueError):
+                    pass
+            _hotkey_ids.clear()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
         os._exit(0)
 
     def update_info_display(self):
@@ -339,8 +402,9 @@ class HistoryWindow:
         self.scroll_frame = tk.Frame(self.canvas)
 
         self.scroll_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw")
+        self._canvas_window = self.canvas.create_window((0, 0), window=self.scroll_frame, anchor="nw")
         self.canvas.configure(yscrollcommand=scrollbar.set)
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
 
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -350,6 +414,9 @@ class HistoryWindow:
         self.win.bind("<Destroy>", self._on_destroy)
 
         self._populate()
+
+    def _on_canvas_resize(self, event):
+        self.canvas.itemconfig(self._canvas_window, width=event.width)
 
     def _on_mousewheel(self, event):
         self.canvas.yview_scroll(-1 * (event.delta // 120), "units")
@@ -404,10 +471,12 @@ class HistoryWindow:
 
     def _copy(self, text):
         pyperclip.copy(text)
-        # Brief visual feedback
-        orig_title = self.win.title()
-        self.win.title("✓ Скопировано!")
-        self.win.after(1000, lambda: self.win.title(orig_title))
+        try:
+            orig_title = self.win.title()
+            self.win.title("✓ Скопировано!")
+            self.win.after(1000, lambda: self.win.title(orig_title))
+        except tk.TclError:
+            pass
 
     def _clear(self):
         with _history_lock:
@@ -421,7 +490,7 @@ class SettingsWindow:
     def __init__(self, parent):
         self.win = tk.Toplevel(parent)
         self.win.title("Настройки диктовки")
-        self.win.geometry("460x480")
+        self.win.geometry("460x550")
         self.win.resizable(False, False)
         self.win.attributes("-topmost", True)
         self.win.grab_set()
@@ -473,17 +542,16 @@ class SettingsWindow:
         self.llm_row.pack(fill=tk.X, pady=(0, 3))
         tk.Label(self.llm_row, text="Ollama модель:", font=("Segoe UI", 10), width=12, anchor="w").pack(side=tk.LEFT)
 
-        # Get available models from Ollama
-        ollama_models = fetch_ollama_models()
         current_llm = config.get("llm_model", "qwen3.5:9b")
-        if current_llm not in ollama_models:
-            ollama_models.insert(0, current_llm)
-
         self.llm_var = tk.StringVar(value=current_llm)
         self.llm_combo = ttk.Combobox(self.llm_row, textvariable=self.llm_var,
-                                      values=ollama_models, font=("Segoe UI", 10), width=25)
+                                      values=[current_llm], font=("Segoe UI", 10), width=25)
         self.llm_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Button(self.llm_row, text="⟳", command=self._refresh_models, font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(5, 0))
+        tk.Button(self.llm_row, text="⟳", command=lambda: threading.Thread(target=self._refresh_models, daemon=True).start(),
+                  font=("Segoe UI", 10)).pack(side=tk.LEFT, padx=(5, 0))
+
+        # Fetch Ollama models in background to avoid blocking UI
+        threading.Thread(target=self._refresh_models, daemon=True).start()
 
         # Hide LLM row if disabled
         if not self.llm_enabled_var.get():
@@ -503,6 +571,27 @@ class SettingsWindow:
                                      font=("Segoe UI", 10), fg="#555")
         self.lang_display.pack(side=tk.LEFT, padx=(10, 0))
         self.lang_var.trace_add("write", self._on_lang_change)
+
+        # ── Input Device ──
+        tk.Label(frame, text="Микрофон", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 5))
+        mic_row = tk.Frame(frame)
+        mic_row.pack(fill=tk.X, pady=(0, 5))
+        tk.Label(mic_row, text="Устройство:", font=("Segoe UI", 10), width=12, anchor="w").pack(side=tk.LEFT)
+
+        input_devices = get_input_devices()
+        self._mic_map = {d[1]: d[0] for d in input_devices}
+        mic_names = ["По умолчанию"] + [d[1] for d in input_devices]
+
+        current_dev = config.get("input_device")
+        if current_dev is not None:
+            current_name = next((d[1] for d in input_devices if d[0] == current_dev), "По умолчанию")
+        else:
+            current_name = "По умолчанию"
+
+        self.mic_var = tk.StringVar(value=current_name)
+        mic_combo = ttk.Combobox(mic_row, textvariable=self.mic_var, values=mic_names,
+                                 state="readonly", font=("Segoe UI", 10), width=35)
+        mic_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         # ── Hotkeys ──
         tk.Label(frame, text="Горячие клавиши", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 5))
@@ -565,7 +654,13 @@ class SettingsWindow:
     def _refresh_models(self):
         models = fetch_ollama_models()
         if models:
-            self.llm_combo["values"] = models
+            current = self.llm_var.get()
+            if current and current not in models:
+                models.insert(0, current)
+            try:
+                self.win.after(0, lambda: self.llm_combo.configure(values=models))
+            except tk.TclError:
+                pass
 
     def _capture_hotkey(self, which):
         if self._capture_window:
@@ -585,16 +680,19 @@ class SettingsWindow:
 
         def capture_thread():
             hotkey = keyboard.read_hotkey(suppress=False)
-            if hotkey == "esc":
-                cw.after(0, cw.destroy)
-                return
-            def update():
-                if which == "record":
-                    self.record_var.set(hotkey)
-                else:
-                    self.quit_var.set(hotkey)
-                cw.destroy()
-            cw.after(0, update)
+            try:
+                if hotkey == "esc":
+                    cw.after(0, cw.destroy)
+                    return
+                def update():
+                    if which == "record":
+                        self.record_var.set(hotkey)
+                    else:
+                        self.quit_var.set(hotkey)
+                    cw.destroy()
+                cw.after(0, update)
+            except tk.TclError:
+                pass
 
         threading.Thread(target=capture_thread, daemon=True).start()
 
@@ -604,6 +702,7 @@ class SettingsWindow:
         old_asr = config.get("asr_backend", "whisper")
         old_whisper = config.get("whisper_model", "large-v3")
         old_llm = config.get("llm_model", "qwen3.5:9b")
+        old_llm_enabled = config.get("llm_enabled", True)
 
         config["hotkey_record"] = self.record_var.get()
         config["hotkey_quit"] = self.quit_var.get()
@@ -612,6 +711,8 @@ class SettingsWindow:
         config["whisper_model"] = self.whisper_var.get()
         config["llm_model"] = self.llm_var.get()
         config["llm_enabled"] = self.llm_enabled_var.get()
+        mic_name = self.mic_var.get()
+        config["input_device"] = self._mic_map.get(mic_name) if mic_name != "По умолчанию" else None
         save_config(config)
 
         # Re-register hotkeys
@@ -630,9 +731,10 @@ class SettingsWindow:
             print(f"[config] ASR backend changed to: {new_asr}")
             threading.Thread(target=reload_asr_model, daemon=True).start()
 
-        # Warm up new LLM model if changed
-        if old_llm != new_llm:
-            print(f"[config] LLM model changed to: {new_llm}")
+        # Warm up LLM if model changed or LLM was just enabled
+        llm_now_enabled = config.get("llm_enabled", True)
+        if llm_now_enabled and (old_llm != new_llm or not old_llm_enabled):
+            print(f"[config] LLM model: {new_llm}")
             threading.Thread(target=warmup_llm, args=(new_llm,), daemon=True).start()
 
         lang = config["language"]
@@ -728,7 +830,13 @@ def transcribe_canary(model, audio_data):
     tmpfile = os.path.join(tempfile.gettempdir(), "dictation_canary_tmp.wav")
     sf.write(tmpfile, audio_data, SAMPLE_RATE)
 
-    result = model.transcribe([tmpfile], source_lang=source_lang, target_lang=source_lang, batch_size=1)
+    try:
+        result = model.transcribe([tmpfile], source_lang=source_lang, target_lang=source_lang, batch_size=1)
+    finally:
+        try:
+            os.remove(tmpfile)
+        except OSError:
+            pass
 
     if isinstance(result, list) and len(result) > 0:
         item = result[0]
@@ -753,24 +861,28 @@ def load_asr_model():
 
 
 def reload_asr_model():
-    """Reload ASR model (called when settings change)."""
+    """Reload ASR model (called when settings change). Waits for any active recording to finish."""
     global _asr_model, _asr_backend
-    print("[config] Reloading ASR model...")
 
-    # Free old model
-    old_model = _asr_model
-    _asr_model = None
-    _asr_backend = None
-    del old_model
+    # Wait for any active processing to finish before swapping models
+    with processing_lock:
+        print("[config] Reloading ASR model...")
 
-    # Try to free GPU memory
-    try:
-        import torch
-        torch.cuda.empty_cache()
-    except Exception:
-        pass
+        # Free old model
+        old_model = _asr_model
+        _asr_model = None
+        _asr_backend = None
+        del old_model
 
-    load_asr_model()
+        # Try to free GPU memory
+        try:
+            import torch
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+        load_asr_model()
+
     if app:
         app.set_status(OverlayApp.STATUS_IDLE)
     print("[config] ASR model reloaded")
@@ -796,7 +908,7 @@ def llm_correct(text):
             json={
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": LLM_SYSTEM},
+                    {"role": "system", "content": get_llm_system()},
                     {"role": "user", "content": text},
                 ],
                 "stream": False,
@@ -858,7 +970,9 @@ def record_audio():
 
     stop_recording_event.clear()
 
+    device = config.get("input_device")  # None = system default
     with sd.InputStream(
+        device=device,
         samplerate=SAMPLE_RATE,
         channels=CHANNELS,
         dtype="float32",
@@ -898,7 +1012,7 @@ def record_audio():
 
 def type_text(text):
     pyperclip.copy(text)
-    time.sleep(0.05)
+    time.sleep(0.15)
     keyboard.send("ctrl+v")
 
 
@@ -908,9 +1022,17 @@ def process_recording():
     try:
         if _asr_model is None:
             print("[skip] ASR model not loaded yet")
+            if app:
+                app.set_status(OverlayApp.STATUS_IDLE)
             return
 
-        audio = record_audio()
+        try:
+            audio = record_audio()
+        except Exception as e:
+            print(f"[error] Microphone error: {e}")
+            if app:
+                app.set_status(OverlayApp.STATUS_IDLE)
+            return
         if len(audio) < SAMPLE_RATE * 0.3:
             print("[skip] Too short")
             if app:
@@ -988,29 +1110,44 @@ def register_hotkeys():
             pass
     _hotkey_ids.clear()
 
-    hid = keyboard.add_hotkey(
-        config["hotkey_record"],
-        on_record_hotkey,
-        suppress=True,
-        trigger_on_release=False,
-    )
-    _hotkey_ids.append(hid)
+    try:
+        hid = keyboard.add_hotkey(
+            config["hotkey_record"],
+            on_record_hotkey,
+            suppress=True,
+            trigger_on_release=False,
+        )
+        _hotkey_ids.append(hid)
+    except Exception as e:
+        print(f"[hotkey] Failed to register record hotkey: {e}")
 
-    hid = keyboard.add_hotkey(
-        config["hotkey_quit"],
-        lambda: os._exit(0),
-        suppress=True,
-        trigger_on_release=False,
-    )
-    _hotkey_ids.append(hid)
+    try:
+        hid = keyboard.add_hotkey(
+            config["hotkey_quit"],
+            lambda: app._shutdown() if app else os._exit(0),
+            suppress=True,
+            trigger_on_release=False,
+        )
+        _hotkey_ids.append(hid)
+    except Exception as e:
+        print(f"[hotkey] Failed to register quit hotkey: {e}")
 
 
 # ──────────────────── Main ────────────────────
 
 def background_init():
     """Load models in background thread, then register hotkeys."""
-    load_asr_model()
-    warmup_llm()
+    try:
+        load_asr_model()
+    except Exception as e:
+        print(f"[error] Failed to load ASR model: {e}")
+        print("[error] Check that the model exists and CUDA is available.")
+        if app:
+            app.set_status(OverlayApp.STATUS_IDLE)
+
+    if config.get("llm_enabled", True):
+        warmup_llm()
+
     register_hotkeys()
 
     hotkey = config["hotkey_record"].upper()
