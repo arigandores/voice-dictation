@@ -121,6 +121,11 @@ def process_recording():
                 state.app.set_status(OverlayApp.STATUS_IDLE)
             return
 
+        # Normalize audio levels (Whisper is not scale-invariant)
+        peak = np.max(np.abs(audio))
+        if peak > 0:
+            audio = audio / peak * 0.95
+
         # VAD filtering for Canary backend
         if asr.get_backend() == "canary":
             audio = filter_silence(audio)

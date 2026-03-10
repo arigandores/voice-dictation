@@ -38,16 +38,44 @@ def load_canary_model():
     model = nemo_asr.models.ASRModel.from_pretrained("nvidia/canary-1b-v2")
     model = model.to("cuda")
     model.eval()
+
+    decode_cfg = model.cfg.decoding
+    decode_cfg.beam.beam_size = 5
+    decode_cfg.beam.len_pen = 1.0
+    model.change_decoding_strategy(decode_cfg)
+    print(f"[canary] Beam search configured (beam_size=5, len_pen=1.0)")
+
     print(f"[canary] Model loaded in {time.time()-t:.1f}s")
     return model
 
 
 def transcribe_whisper(model, audio_data):
     lang = state.config.get("language", "auto")
+
+    initial_prompt = None
+    if lang in ("ru", "auto"):
+        initial_prompt = (
+            "Мы обсуждали архитектуру backend-сервиса. Нужно настроить CI/CD pipeline, "
+            "задеплоить Docker-контейнер на Kubernetes. Я создал pull request, "
+            "прошёл code review и замержил в main. Проверил REST API endpoint, "
+            "отправил JSON через webhook. Всё работает стабильно после последнего release. "
+            "Термины: API, Docker, git, pull request, deploy, endpoint, Kubernetes, "
+            "CI/CD, backend, frontend, merge, commit, pipeline, container, debug, "
+            "microservice, REST, JSON, webhook, release, server, database, "
+            "refactoring, framework, library, repository, branch, staging, production."
+        )
+
     segments, info = model.transcribe(
         audio_data,
         language=None if lang == "auto" else lang,
         beam_size=5,
+        patience=1.5,
+        repetition_penalty=1.1,
+        no_repeat_ngram_size=3,
+        condition_on_previous_text=True,
+        prompt_reset_on_temperature=0.5,
+        initial_prompt=initial_prompt,
+        hallucination_silence_threshold=2.0,
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=300),
     )
