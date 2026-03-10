@@ -194,3 +194,21 @@ def transcribe(audio_data):
         return transcribe_canary(_asr_model, audio_data)
     else:
         return transcribe_whisper(_asr_model, audio_data)
+
+
+def transcribe_quick(audio_data):
+    """Fast transcription for live preview (Whisper only, greedy decoding)."""
+    if _asr_model is None or _asr_backend != "whisper":
+        return ""
+    try:
+        lang = state.config.get("language", "auto")
+        segments, _ = _asr_model.transcribe(
+            audio_data,
+            language=None if lang == "auto" else lang,
+            beam_size=1,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=300),
+        )
+        return " ".join(seg.text.strip() for seg in segments)
+    except Exception:
+        return ""

@@ -96,6 +96,18 @@ class OverlayApp:
         )
         self.hotkey_label.pack(fill=tk.X)
 
+        # Live transcription preview (hidden by default)
+        self._live_label = tk.Label(
+            self.frame,
+            text="",
+            font=("Segoe UI", 8),
+            fg="#dddddd",
+            bg=self.COLORS["recording"],
+            anchor="w",
+            wraplength=self.width - 24,
+            justify="left",
+        )
+
         # Waveform canvas (hidden by default)
         self._wave_canvas = tk.Canvas(
             self.frame,
@@ -164,10 +176,13 @@ class OverlayApp:
         self._wave_canvas.pack(fill=tk.X, pady=(6, 0))
         self._wave_display = [0.0] * self.WAVE_POINTS
         self._wave_last_rms = 0.0
-        # Resize window to fit waveform
-        geo = self.root.geometry()
-        pos = geo.split("+", 1)[1]
-        self.root.geometry(f"{self.width}x{self._height_recording}+{pos}")
+        # Show live preview if streaming enabled
+        self._live_text = ""
+        if state.config.get("llm_streaming", False):
+            self._live_label.config(text="", bg=bg_color)
+            self._live_label.pack(fill=tk.X, pady=(4, 0))
+        # Resize window to fit waveform + preview
+        self._resize_recording_window()
         self._wave_update()
 
     def _hide_waveform(self):
@@ -176,10 +191,34 @@ class OverlayApp:
             self.root.after_cancel(self._wave_job)
             self._wave_job = None
         self._wave_canvas.pack_forget()
+        self._live_label.pack_forget()
+        self._live_text = ""
         # Resize window back to normal
         geo = self.root.geometry()
         pos = geo.split("+", 1)[1]
         self.root.geometry(f"{self.width}x{self._height_normal}+{pos}")
+
+    def _resize_recording_window(self):
+        """Resize overlay window to fit waveform and optional live preview."""
+        h = self._height_recording
+        if state.config.get("llm_streaming", False):
+            h += 40  # extra space for live transcription text
+        geo = self.root.geometry()
+        pos = geo.split("+", 1)[1]
+        self.root.geometry(f"{self.width}x{h}+{pos}")
+
+    def set_live_text(self, text):
+        """Update live transcription preview (called from background thread)."""
+        self.root.after(0, self._update_live_text, text)
+
+    def _update_live_text(self, text):
+        if self._current_status != self.STATUS_RECORDING:
+            return
+        # Show last ~80 chars to fit the small overlay
+        display = text.strip()
+        if len(display) > 80:
+            display = "..." + display[-77:]
+        self._live_label.config(text=display)
 
     def _wave_update(self):
         """Read new amplitude samples, smooth, and redraw."""

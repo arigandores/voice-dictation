@@ -1,6 +1,7 @@
 """Audio recording and processing pipeline."""
 
 import math
+import threading
 import time
 import numpy as np
 import miniaudio
@@ -13,6 +14,30 @@ from dictation.vad import filter_silence
 from dictation.llm import llm_correct, llm_correct_streaming
 
 MAX_RECORDING_SECONDS = 300  # 5 minutes
+LIVE_TRANSCRIBE_INTERVAL = 2.0  # seconds between live preview updates
+
+
+def _live_transcribe_loop(buf, stop_event):
+    """Periodically transcribe the recording buffer for live preview."""
+    from dictation import asr
+    last_len = 0
+    while not stop_event.wait(timeout=LIVE_TRANSCRIBE_INTERVAL):
+        if not buf or len(buf) == last_len:
+            continue
+        last_len = len(buf)
+        try:
+            audio = np.frombuffer(b"".join(buf), dtype=np.float32)
+            if len(audio) < SAMPLE_RATE * 0.5:
+                continue
+            # Normalize for preview
+            peak = np.max(np.abs(audio))
+            if peak > 0:
+                audio = audio / peak * 0.95
+            text = asr.transcribe_quick(audio)
+            if text.strip() and state.app:
+                state.app.set_live_text(text)
+        except Exception as e:
+            print(f"[live] Preview error: {e}")
 
 
 def _find_capture_device_id(name):
@@ -68,6 +93,14 @@ def record_audio():
         from dictation.ui.overlay import OverlayApp
         state.app.set_status(OverlayApp.STATUS_RECORDING)
 
+    # Start live transcription preview if streaming enabled
+    live_stop = threading.Event()
+    if state.config.get("llm_streaming", False):
+        threading.Thread(
+            target=_live_transcribe_loop, args=(buf, live_stop),
+            daemon=True,
+        ).start()
+
     rec_start = time.time()
     try:
         while not state.stop_recording_event.wait(timeout=0.05):
@@ -75,6 +108,7 @@ def record_audio():
                 print(f"[rec] Max duration ({MAX_RECORDING_SECONDS}s) reached, stopping")
                 break
     finally:
+        live_stop.set()
         with state.recording_lock:
             state.is_recording = False
         cap.stop()
