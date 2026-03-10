@@ -10,7 +10,7 @@ import pyperclip
 from dictation.config import SAMPLE_RATE, CHANNELS
 from dictation import state
 from dictation.vad import filter_silence
-from dictation.llm import llm_correct
+from dictation.llm import llm_correct, llm_correct_streaming
 
 MAX_RECORDING_SECONDS = 300  # 5 minutes
 
@@ -121,6 +121,19 @@ def process_recording():
                 state.app.set_status(OverlayApp.STATUS_IDLE)
             return
 
+        # Noise reduction (optional)
+        if state.config.get("noise_reduction", False):
+            try:
+                import noisereduce as nr
+                audio = nr.reduce_noise(
+                    y=audio, sr=SAMPLE_RATE,
+                    stationary=False, prop_decrease=0.75,
+                    use_torch=True, device="cuda",
+                )
+                print("[rec] Noise reduction applied")
+            except ImportError:
+                print("[rec] noisereduce not installed, skipping noise reduction")
+
         # Normalize audio levels (Whisper is not scale-invariant)
         peak = np.max(np.abs(audio))
         if peak > 0:
@@ -140,7 +153,7 @@ def process_recording():
             state.app.set_status(OverlayApp.STATUS_TRANSCRIBING)
         t = time.time()
         backend_tag = asr.get_backend() or "whisper"
-        raw_text = asr.transcribe(audio)
+        raw_text, avg_logprob = asr.transcribe(audio)
         asr_time = time.time() - t
         print(f"[{backend_tag}] ({asr_time:.2f}s) {raw_text}")
 
@@ -155,7 +168,10 @@ def process_recording():
             if state.app:
                 state.app.set_status(OverlayApp.STATUS_CORRECTING)
             t = time.time()
-            corrected = llm_correct(raw_text)
+            if state.config.get("llm_streaming", False):
+                corrected = llm_correct_streaming(raw_text)
+            else:
+                corrected = llm_correct(raw_text)
             llm_time = time.time() - t
             print(f"[llm] ({llm_time:.2f}s) {corrected}")
         else:

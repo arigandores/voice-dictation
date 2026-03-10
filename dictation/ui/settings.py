@@ -16,7 +16,7 @@ class SettingsWindow:
     def __init__(self, parent):
         self.win = tk.Toplevel(parent)
         self.win.title("Настройки диктовки")
-        self.win.geometry("460x550")
+        self.win.geometry("460x680")
         self.win.resizable(False, False)
         self.win.attributes("-topmost", True)
         self.win.grab_set()
@@ -117,6 +117,24 @@ class SettingsWindow:
         mic_combo = ttk.Combobox(mic_row, textvariable=self.mic_var, values=mic_names,
                                  state="readonly", font=("Segoe UI", 10), width=35)
         mic_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # -- Custom Prompt Terms --
+        tk.Label(frame, text="Дополнительные термины", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 3))
+        tk.Label(frame, text="Через запятую (добавляются в промпт Whisper):", font=("Segoe UI", 8), fg="#888").pack(anchor="w")
+        self.custom_terms_var = tk.StringVar(value=state.config.get("custom_prompt_terms", ""))
+        terms_entry = tk.Entry(frame, textvariable=self.custom_terms_var, font=("Segoe UI", 10))
+        terms_entry.pack(fill=tk.X, pady=(2, 5))
+
+        # -- Audio Processing --
+        tk.Label(frame, text="Обработка аудио", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 5))
+        self.noise_var = tk.BooleanVar(value=state.config.get("noise_reduction", False))
+        tk.Checkbutton(frame, text="Шумоподавление (noisereduce)", variable=self.noise_var,
+                        font=("Segoe UI", 10)).pack(anchor="w")
+
+        # -- LLM Streaming --
+        self.streaming_var = tk.BooleanVar(value=state.config.get("llm_streaming", False))
+        tk.Checkbutton(frame, text="Streaming LLM (быстрее отклик)", variable=self.streaming_var,
+                        font=("Segoe UI", 10)).pack(anchor="w")
 
         # -- Hotkeys --
         tk.Label(frame, text="Горячие клавиши", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 5))
@@ -245,6 +263,9 @@ class SettingsWindow:
         state.config["whisper_model"] = self.whisper_var.get()
         state.config["llm_model"] = self.llm_var.get()
         state.config["llm_enabled"] = self.llm_enabled_var.get()
+        state.config["llm_streaming"] = self.streaming_var.get()
+        state.config["custom_prompt_terms"] = self.custom_terms_var.get().strip()
+        state.config["noise_reduction"] = self.noise_var.get()
         mic_name = self.mic_var.get()
         state.config["input_device"] = mic_name if mic_name != "По умолчанию" else None
         save_config(state.config)

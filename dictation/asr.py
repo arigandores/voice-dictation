@@ -49,6 +49,14 @@ def load_canary_model():
     return model
 
 
+_HOTWORDS = (
+    "API Docker git pull request deploy endpoint Kubernetes "
+    "CI/CD backend frontend merge commit pipeline container debug "
+    "microservice REST JSON webhook release server database "
+    "refactoring framework library repository branch staging production"
+)
+
+
 def transcribe_whisper(model, audio_data):
     lang = state.config.get("language", "auto")
 
@@ -58,12 +66,17 @@ def transcribe_whisper(model, audio_data):
             "Мы обсуждали архитектуру backend-сервиса. Нужно настроить CI/CD pipeline, "
             "задеплоить Docker-контейнер на Kubernetes. Я создал pull request, "
             "прошёл code review и замержил в main. Проверил REST API endpoint, "
-            "отправил JSON через webhook. Всё работает стабильно после последнего release. "
-            "Термины: API, Docker, git, pull request, deploy, endpoint, Kubernetes, "
-            "CI/CD, backend, frontend, merge, commit, pipeline, container, debug, "
-            "microservice, REST, JSON, webhook, release, server, database, "
-            "refactoring, framework, library, repository, branch, staging, production."
+            "отправил JSON через webhook. Всё работает стабильно после последнего release."
         )
+
+    # Append user-defined custom terms
+    custom = state.config.get("custom_prompt_terms", "").strip()
+    if custom:
+        terms_line = f" Термины: {custom}."
+        if initial_prompt:
+            initial_prompt += terms_line
+        else:
+            initial_prompt = terms_line
 
     segments, info = model.transcribe(
         audio_data,
@@ -75,14 +88,29 @@ def transcribe_whisper(model, audio_data):
         condition_on_previous_text=True,
         prompt_reset_on_temperature=0.5,
         initial_prompt=initial_prompt,
+        hotwords=_HOTWORDS,
         hallucination_silence_threshold=2.0,
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=300),
     )
-    text = " ".join(seg.text.strip() for seg in segments)
+
+    # Collect segments and compute average confidence
+    texts = []
+    log_probs = []
+    for seg in segments:
+        texts.append(seg.text.strip())
+        if seg.avg_logprob is not None:
+            log_probs.append(seg.avg_logprob)
+
+    text = " ".join(texts)
+    avg_logprob = sum(log_probs) / len(log_probs) if log_probs else None
+
     if lang == "auto":
         print(f"[whisper] Detected language: {info.language} ({info.language_probability:.0%})")
-    return text
+    if avg_logprob is not None:
+        print(f"[whisper] Confidence: avg_logprob={avg_logprob:.3f}")
+
+    return text, avg_logprob
 
 
 def transcribe_canary(model, audio_data):
@@ -110,7 +138,7 @@ def transcribe_canary(model, audio_data):
 
     if lang == "auto":
         print(f"[canary] (source_lang={source_lang})")
-    return text.strip()
+    return text.strip(), None  # Canary doesn't expose per-segment logprob
 
 
 def load_asr_model():

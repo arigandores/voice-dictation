@@ -6,34 +6,65 @@ from dictation.config import OLLAMA_URL, get_llm_system
 from dictation import state
 
 
+def _build_request(text):
+    """Build the Ollama API request body."""
+    model = state.config.get("llm_model", "qwen3.5:9b")
+    lang = state.config.get("language", "auto")
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": get_llm_system(lang)},
+            {"role": "user", "content": text},
+        ],
+        "think": False,
+        "options": {
+            "temperature": 0.2,
+            "num_predict": 512,
+        },
+    }
+
+
 def llm_correct(text):
     if not text.strip():
         return text
-    model = state.config.get("llm_model", "qwen3.5:9b")
-    lang = state.config.get("language", "auto")
     try:
-        resp = httpx.post(
-            OLLAMA_URL,
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": get_llm_system(lang)},
-                    {"role": "user", "content": text},
-                ],
-                "stream": False,
-                "think": False,
-                "options": {
-                    "temperature": 0.2,
-                    "num_predict": 512,
-                },
-            },
-            timeout=30.0,
-        )
+        body = _build_request(text)
+        body["stream"] = False
+        resp = httpx.post(OLLAMA_URL, json=body, timeout=30.0)
         resp.raise_for_status()
         result = resp.json()["message"]["content"].strip()
         return result if result else text
     except Exception as e:
         print(f"[llm] Error: {e}")
+        return text
+
+
+def llm_correct_streaming(text, on_token=None):
+    """Stream LLM correction, calling on_token(partial_text) as tokens arrive."""
+    if not text.strip():
+        return text
+    try:
+        body = _build_request(text)
+        body["stream"] = True
+        collected = []
+        with httpx.stream("POST", OLLAMA_URL, json=body, timeout=30.0) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                import json
+                chunk = json.loads(line)
+                if chunk.get("done"):
+                    break
+                token = chunk.get("message", {}).get("content", "")
+                if token:
+                    collected.append(token)
+                    if on_token:
+                        on_token("".join(collected))
+        result = "".join(collected).strip()
+        return result if result else text
+    except Exception as e:
+        print(f"[llm] Streaming error: {e}")
         return text
 
 

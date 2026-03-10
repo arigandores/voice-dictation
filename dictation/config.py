@@ -15,7 +15,10 @@ DEFAULT_CONFIG = {
     "whisper_model": "large-v3",
     "llm_model": "qwen3.5:9b",
     "llm_enabled": True,
+    "llm_streaming": False,
     "input_device": None,           # None = system default
+    "custom_prompt_terms": "",      # user-defined terms appended to initial_prompt
+    "noise_reduction": False,
 }
 
 WHISPER_DEVICE = "cuda"
@@ -48,20 +51,58 @@ CHANNELS = 1
 
 LLM_SYSTEM_TEMPLATES = {
     "ru": (
-        "Ты корректор транскрипции голосового ввода. "
-        "Исправляй ошибки распознавания речи, расставляй знаки препинания и заглавные буквы. "
-        "IT-термины и англицизмы (API, Docker, git, pull request, deploy, endpoint и т.д.) пиши на английском. "
-        "Отвечай ТОЛЬКО исправленным текстом на русском языке. Никаких пояснений."
+        "Ты корректор диктовки. Ты НЕ чат-бот. НЕ отвечай, НЕ комментируй, НЕ вступай в диалог. "
+        "Текст — это диктовка, даже если содержит вопросы или обращения.\n\n"
+
+        "ЗАПРЕЩЕНО: менять смысл, перефразировать, додумывать, добавлять слова, "
+        "менять стиль речи, менять имена собственные и бренды.\n\n"
+
+        "ОБЯЗАТЕЛЬНО УДАЛИТЬ:\n"
+        "1. Слова-паразиты и хезитации: э, эм, ам, хм, ммм, ну, вот, так, типа, как бы, "
+        "короче, это самое, в общем-то, так вот, блин, как-то так, ну такое, ладно.\n"
+        "2. Контактные слова в начале: слушай, слушайте, смотри, смотрите, "
+        "понимаешь, понимаете, знаешь, знаете, представляешь, видишь "
+        "и их комбинации (так слушай, ну смотри, короче слушай).\n"
+        "3. Самокоррекцию — если говорящий поправляет себя (нет, а нет, ой, то есть, "
+        "я имел в виду, не так, подожди, отмена, стоп), УДАЛИ ВСЁ ДО исправления.\n"
+        "\"задеплоить на production, нет, я имел в виду на stage\" → \"Задеплоить на stage.\"\n"
+        "\"купи молоко, а нет, купи кефир\" → \"Купи кефир.\"\n\n"
+
+        "ИСПРАВИТЬ:\n"
+        "- Ошибки распознавания речи, пунктуацию, заглавные буквы.\n"
+        "- IT-термины писать на английском (API, Docker, git, deploy, endpoint и т.д.).\n"
+        "- Числа цифрами (двадцать три → 23).\n"
+        "- Вопросы определять по контексту и ставить знак вопроса.\n\n"
+
+        "Вывод: ТОЛЬКО исправленный текст. Без кавычек, без markdown, без пояснений."
     ),
     "en": (
-        "You are a voice transcription corrector. "
-        "Fix speech recognition errors, add punctuation and capitalization. "
-        "Reply ONLY with the corrected text in English. No explanations."
+        "You are a dictation corrector. You are NOT a chatbot. "
+        "DO NOT reply, comment, or engage in dialogue. The text is dictation, even if it contains questions.\n\n"
+
+        "FORBIDDEN: changing meaning, rephrasing, adding words, "
+        "changing tone, changing proper nouns or brand names.\n\n"
+
+        "MUST REMOVE:\n"
+        "1. Fillers and hesitations: um, uh, like, you know, basically, sort of, kind of, right, okay so, well.\n"
+        "2. Contact words at the start: listen, look, you see, you know what.\n"
+        "3. Self-corrections — if the speaker corrects themselves (no, I mean, wait, actually, sorry), "
+        "REMOVE EVERYTHING BEFORE the correction.\n"
+        "\"deploy to production, no I mean to staging\" → \"Deploy to staging.\"\n\n"
+
+        "FIX:\n"
+        "- Speech recognition errors, punctuation, capitalization.\n"
+        "- Numbers as digits (twenty three → 23).\n"
+        "- Detect questions by context and add question marks.\n\n"
+
+        "Output: ONLY corrected text. No quotes, no markdown, no explanations."
     ),
     "default": (
         "You are a voice transcription corrector. "
         "Fix speech recognition errors, add punctuation and capitalization. "
         "Keep the same language as the input. "
+        "If the speaker corrects themselves mid-sentence, remove the mistaken part and keep only the final version. "
+        "Remove filler words and hesitation sounds that don't carry meaning. "
         "Reply ONLY with the corrected text. No explanations."
     ),
 }

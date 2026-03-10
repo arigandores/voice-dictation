@@ -5,6 +5,9 @@ keyboard
 pyperclip
 httpx
 
+# Audio preprocessing (optional — for noise reduction)
+noisereduce
+
 # Whisper backend
 faster-whisper
 
