@@ -648,9 +648,15 @@ class SettingsWindow:
             if current and current not in models:
                 models.insert(0, current)
             try:
-                self.win.after(0, lambda: self.llm_combo.configure(values=models))
+                self.win.after(0, lambda m=models: self._safe_update_models(m))
             except tk.TclError:
                 pass
+
+    def _safe_update_models(self, models):
+        try:
+            self.llm_combo.configure(values=models)
+        except tk.TclError:
+            pass
 
     def _capture_hotkey(self, which):
         if self._capture_window:
