@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+whisper-env/
+.venv/
+venv/
+
+# Config (user-specific)
+dictation_config.json
+
+# Models (large files)
+*.bin
+*.pt
+*.onnx
+*.safetensors
+
+# Temp
+*.tmp
+*.wav
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store

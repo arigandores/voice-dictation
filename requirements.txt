@@ -1,0 +1,17 @@
+# Core
+numpy
+sounddevice
+keyboard
+pyperclip
+httpx
+
+# Whisper backend
+faster-whisper
+
+# Canary backend (optional — install only if using Canary)
+# nemo_toolkit[asr]
+# silero-vad
+# soundfile
+
+# PyTorch with CUDA (install separately):
+# uv pip install --reinstall torch torchaudio --index-url https://download.pytorch.org/whl/cu128
