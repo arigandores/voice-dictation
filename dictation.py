@@ -20,7 +20,7 @@ import threading
 import queue
 import tempfile
 import numpy as np
-import sounddevice as sd
+import miniaudio
 import keyboard
 import pyperclip
 import httpx
@@ -122,25 +122,12 @@ def save_config(cfg):
 
 
 def get_input_devices():
-    """Return list of (index, name) for WASAPI input devices only."""
-    devices = sd.query_devices()
-    hostapis = sd.query_hostapis()
-
-    # Find WASAPI hostapi index
-    wasapi_idx = None
-    for idx, api in enumerate(hostapis):
-        if "WASAPI" in api.get("name", ""):
-            wasapi_idx = idx
-            break
-
-    result = []
-    for i, d in enumerate(devices):
-        if d["max_input_channels"] > 0:
-            # Only WASAPI devices (fallback to all if WASAPI not found)
-            if wasapi_idx is not None and d.get("hostapi") != wasapi_idx:
-                continue
-            result.append((i, d["name"]))
-    return result
+    """Return list of (name, name) for capture devices via miniaudio."""
+    try:
+        devs = miniaudio.Devices()
+        return [(d["name"], d["name"]) for d in devs.get_captures()]
+    except Exception:
+        return []
 
 
 def fetch_ollama_models():
@@ -584,7 +571,10 @@ class SettingsWindow:
 
         current_dev = config.get("input_device")
         if current_dev is not None:
-            current_name = next((d[1] for d in input_devices if d[0] == current_dev), "По умолчанию")
+            if isinstance(current_dev, str) and current_dev in self._mic_map:
+                current_name = current_dev
+            else:
+                current_name = "По умолчанию"  # old int index or stale name
         else:
             current_name = "По умолчанию"
 
@@ -952,59 +942,65 @@ def warmup_llm(model_name=None):
 
 # ──────────────────── Audio / Recording ────────────────────
 
-def audio_callback(indata, frames, time_info, status):
-    if status:
-        print(f"[audio] {status}")
-    audio_queue.put(indata.copy())
+def _find_capture_device_id(name):
+    """Find miniaudio device_id by name, or None for default."""
+    if not name:
+        return None
+    try:
+        devs = miniaudio.Devices()
+        for d in devs.get_captures():
+            if d["name"] == name:
+                return d["id"]
+    except Exception:
+        pass
+    print(f"[rec] Device '{name}' not found, using default")
+    return None
 
 
 def record_audio():
     global is_recording
-    chunks = []
-
-    while not audio_queue.empty():
-        try:
-            audio_queue.get_nowait()
-        except queue.Empty:
-            break
+    buf = []
 
     stop_recording_event.clear()
 
-    device = config.get("input_device")  # None = system default
-    with sd.InputStream(
-        device=device,
-        samplerate=SAMPLE_RATE,
-        channels=CHANNELS,
-        dtype="float32",
-        callback=audio_callback,
-        blocksize=1024,
-    ):
-        with recording_lock:
-            is_recording = True
-        print("[rec] Recording... (press hotkey again to stop)")
-        if app:
-            app.set_status(OverlayApp.STATUS_RECORDING)
+    device_name = config.get("input_device")
+    device_id = _find_capture_device_id(device_name)
 
+    def capture_gen():
+        while True:
+            data = yield
+            buf.append(bytes(data))
+
+    cap = miniaudio.CaptureDevice(
+        input_format=miniaudio.SampleFormat.FLOAT32,
+        nchannels=CHANNELS,
+        sample_rate=SAMPLE_RATE,
+        device_id=device_id,
+    )
+    gen = capture_gen()
+    next(gen)  # prime the generator
+    cap.start(gen)
+
+    mic_name = device_name or "default"
+    print(f"[rec] Recording from '{mic_name}'... (press hotkey again to stop)")
+    with recording_lock:
+        is_recording = True
+    if app:
+        app.set_status(OverlayApp.STATUS_RECORDING)
+
+    try:
         while not stop_recording_event.is_set():
-            try:
-                chunk = audio_queue.get(timeout=0.05)
-                chunks.append(chunk)
-            except queue.Empty:
-                pass
-
+            time.sleep(0.05)
+    finally:
         with recording_lock:
             is_recording = False
+        cap.stop()
+        cap.close()
 
-    while not audio_queue.empty():
-        try:
-            chunks.append(audio_queue.get_nowait())
-        except queue.Empty:
-            break
-
-    if not chunks:
+    if not buf:
         return np.array([], dtype=np.float32)
 
-    audio = np.concatenate(chunks, axis=0).flatten()
+    audio = np.frombuffer(b"".join(buf), dtype=np.float32)
     duration = len(audio) / SAMPLE_RATE
     print(f"[rec] Recorded {duration:.1f}s")
     return audio

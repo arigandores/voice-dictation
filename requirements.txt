@@ -1,6 +1,6 @@
 # Core
 numpy
-sounddevice
+miniaudio
 keyboard
 pyperclip
 httpx
