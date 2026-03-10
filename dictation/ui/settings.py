@@ -105,15 +105,11 @@ class SettingsWindow:
         tk.Label(mic_row, text="Устройство:", font=("Segoe UI", 10), width=12, anchor="w").pack(side=tk.LEFT)
 
         input_devices = get_input_devices()
-        self._mic_map = {d[1]: d[0] for d in input_devices}
-        mic_names = ["По умолчанию"] + [d[1] for d in input_devices]
+        mic_names = ["По умолчанию"] + input_devices
 
         current_dev = state.config.get("input_device")
-        if current_dev is not None:
-            if isinstance(current_dev, str) and current_dev in self._mic_map:
-                current_name = current_dev
-            else:
-                current_name = "По умолчанию"
+        if current_dev and isinstance(current_dev, str) and current_dev in input_devices:
+            current_name = current_dev
         else:
             current_name = "По умолчанию"
 
@@ -250,7 +246,7 @@ class SettingsWindow:
         state.config["llm_model"] = self.llm_var.get()
         state.config["llm_enabled"] = self.llm_enabled_var.get()
         mic_name = self.mic_var.get()
-        state.config["input_device"] = self._mic_map.get(mic_name) if mic_name != "По умолчанию" else None
+        state.config["input_device"] = mic_name if mic_name != "По умолчанию" else None
         save_config(state.config)
 
         # Re-register hotkeys

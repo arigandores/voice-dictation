@@ -62,7 +62,8 @@ def transcribe_canary(model, audio_data):
     lang = state.config.get("language", "auto")
     source_lang = "ru" if lang == "auto" else lang
 
-    tmpfile = os.path.join(tempfile.gettempdir(), "dictation_canary_tmp.wav")
+    fd, tmpfile = tempfile.mkstemp(suffix=".wav", prefix="dictation_canary_")
+    os.close(fd)
     sf.write(tmpfile, audio_data, SAMPLE_RATE)
 
     try:
@@ -119,6 +120,16 @@ def reload_asr_model():
         from dictation.ui.overlay import OverlayApp
         state.app.set_status(OverlayApp.STATUS_IDLE)
     print("[config] ASR model reloaded")
+
+
+def is_loaded():
+    """Return True if an ASR model is currently loaded."""
+    return _asr_model is not None
+
+
+def get_backend():
+    """Return the name of the currently loaded ASR backend."""
+    return _asr_backend
 
 
 def transcribe(audio_data):

@@ -1,10 +1,10 @@
-"""Small always-on-top status overlay widget."""
+"""Small always-on-top status overlay widget with waveform visualizer."""
 
+import math
 import os
 import tkinter as tk
 
 from dictation import state
-from dictation.hotkeys import _hotkey_ids
 
 
 class OverlayApp:
@@ -27,13 +27,19 @@ class OverlayApp:
     }
 
     LABELS = {
-        "idle": "⏳ Готов к записи",
-        "recording": "🔴 Запись...",
-        "transcribing": "📝 Транскрипция",
-        "correcting": "✨ Коррекция",
-        "done": "✅ Готово!",
-        "loading": "⏳ Загрузка модели",
+        "idle": "\u23f3 \u0413\u043e\u0442\u043e\u0432 \u043a \u0437\u0430\u043f\u0438\u0441\u0438",
+        "recording": "\U0001f534 \u0417\u0430\u043f\u0438\u0441\u044c...",
+        "transcribing": "\U0001f4dd \u0422\u0440\u0430\u043d\u0441\u043a\u0440\u0438\u043f\u0446\u0438\u044f",
+        "correcting": "\u2728 \u041a\u043e\u0440\u0440\u0435\u043a\u0446\u0438\u044f",
+        "done": "\u2705 \u0413\u043e\u0442\u043e\u0432\u043e!",
+        "loading": "\u23f3 \u0417\u0430\u0433\u0440\u0443\u0437\u043a\u0430 \u043c\u043e\u0434\u0435\u043b\u0438",
     }
+
+    # Waveform settings
+    WAVE_HEIGHT = 34
+    WAVE_POINTS = 40       # number of amplitude points in the wave
+    WAVE_UPDATE_MS = 50
+    WAVE_MAX_RMS = 0.12    # RMS reference for full-scale
 
     def __init__(self):
         self.root = tk.Tk()
@@ -43,11 +49,12 @@ class OverlayApp:
         self.root.attributes("-alpha", 0.9)
 
         self.width = 220
-        self.height = 58
+        self._height_normal = 58
+        self._height_recording = 58 + self.WAVE_HEIGHT + 8
         screen_w = self.root.winfo_screenwidth()
         x = screen_w - self.width - 20
         y = 20
-        self.root.geometry(f"{self.width}x{self.height}+{x}+{y}")
+        self.root.geometry(f"{self.width}x{self._height_normal}+{x}+{y}")
 
         # Draggable
         self._drag_data = {"x": 0, "y": 0}
@@ -56,10 +63,10 @@ class OverlayApp:
 
         # Right-click menu
         self.menu = tk.Menu(self.root, tearoff=0)
-        self.menu.add_command(label="📋 История", command=self._open_history)
-        self.menu.add_command(label="⚙ Настройки", command=self._open_settings)
+        self.menu.add_command(label="\U0001f4cb \u0418\u0441\u0442\u043e\u0440\u0438\u044f", command=self._open_history)
+        self.menu.add_command(label="\u2699 \u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438", command=self._open_settings)
         self.menu.add_separator()
-        self.menu.add_command(label="✕ Выход", command=self._quit)
+        self.menu.add_command(label="\u2715 \u0412\u044b\u0445\u043e\u0434", command=self._quit)
         self.root.bind("<Button-3>", self._show_menu)
 
         # Main frame
@@ -89,6 +96,17 @@ class OverlayApp:
         )
         self.hotkey_label.pack(fill=tk.X)
 
+        # Waveform canvas (hidden by default)
+        self._wave_canvas = tk.Canvas(
+            self.frame,
+            height=self.WAVE_HEIGHT,
+            bg=self.COLORS["recording"],
+            highlightthickness=0,
+        )
+        self._wave_display = [0.0] * self.WAVE_POINTS
+        self._wave_last_rms = 0.0  # held value between audio chunks
+        self._wave_job = None
+
         self._anim_dots = 0
         self._anim_job = None
         self._current_status = self.STATUS_IDLE
@@ -100,7 +118,7 @@ class OverlayApp:
         if state.config.get("llm_enabled", True):
             llm = state.config.get("llm_model", "qwen3.5:9b")
         else:
-            llm = "LLM выкл"
+            llm = "LLM \u0432\u044b\u043a\u043b"
         return f"{hotkey}  |  {backend}  |  {llm}"
 
     def set_status(self, status, extra=""):
@@ -124,6 +142,12 @@ class OverlayApp:
             self.root.after_cancel(self._done_hide_job)
             self._done_hide_job = None
 
+        # Waveform: show during recording, hide otherwise
+        if status == self.STATUS_RECORDING:
+            self._show_waveform(color)
+        else:
+            self._hide_waveform()
+
         if status in (self.STATUS_RECORDING, self.STATUS_TRANSCRIBING, self.STATUS_CORRECTING, self.STATUS_LOADING):
             self._anim_dots = 0
             self._animate(status)
@@ -133,6 +157,129 @@ class OverlayApp:
 
         self.root.deiconify()
         self.root.attributes("-topmost", True)
+
+    def _show_waveform(self, bg_color):
+        """Show waveform canvas and start updating."""
+        self._wave_canvas.config(bg=bg_color)
+        self._wave_canvas.pack(fill=tk.X, pady=(6, 0))
+        self._wave_display = [0.0] * self.WAVE_POINTS
+        self._wave_last_rms = 0.0
+        # Resize window to fit waveform
+        geo = self.root.geometry()
+        pos = geo.split("+", 1)[1]
+        self.root.geometry(f"{self.width}x{self._height_recording}+{pos}")
+        self._wave_update()
+
+    def _hide_waveform(self):
+        """Hide waveform canvas and stop updating."""
+        if self._wave_job:
+            self.root.after_cancel(self._wave_job)
+            self._wave_job = None
+        self._wave_canvas.pack_forget()
+        # Resize window back to normal
+        geo = self.root.geometry()
+        pos = geo.split("+", 1)[1]
+        self.root.geometry(f"{self.width}x{self._height_normal}+{pos}")
+
+    def _wave_update(self):
+        """Read new amplitude samples, smooth, and redraw."""
+        if self._current_status != self.STATUS_RECORDING:
+            return
+
+        # Drain all pending samples from the shared deque
+        levels = state.waveform_levels
+        new_samples = []
+        while True:
+            try:
+                new_samples.append(levels.popleft())
+            except IndexError:
+                break
+
+        # Compute target: use new data or decay from last known level
+        if new_samples:
+            self._wave_last_rms = sum(new_samples) / len(new_samples)
+        else:
+            # Slow decay — keeps the wave smooth when chunks arrive unevenly
+            self._wave_last_rms *= 0.85
+
+        # Scroll left and push current level
+        self._wave_display.pop(0)
+        self._wave_display.append(self._wave_last_rms)
+
+        self._draw_waveform()
+        self._wave_job = self.root.after(self.WAVE_UPDATE_MS, self._wave_update)
+
+    def _draw_waveform(self):
+        """Draw a smooth filled waveform polygon mirrored from center."""
+        c = self._wave_canvas
+        c.delete("all")
+
+        w = c.winfo_width()
+        h = self.WAVE_HEIGHT
+        if w < 10:
+            w = self.width - 20
+
+        n = self.WAVE_POINTS
+        mid_y = h / 2
+        max_half = mid_y - 2  # max amplitude in pixels
+
+        # Build normalized amplitudes
+        amps = []
+        for rms in self._wave_display:
+            norm = min(rms / self.WAVE_MAX_RMS, 1.0)
+            norm = math.sqrt(norm)
+            amps.append(norm)
+
+        # Build polygon points: top curve (left to right), then bottom curve (right to left)
+        step = w / max(n - 1, 1)
+        top_points = []
+        bottom_points = []
+        for i, amp in enumerate(amps):
+            x = i * step
+            offset = max(1, amp * max_half)
+            top_points.append(x)
+            top_points.append(mid_y - offset)
+            bottom_points.append(x)
+            bottom_points.append(mid_y + offset)
+
+        # Reverse bottom so the polygon closes properly
+        bottom_points_rev = []
+        for i in range(len(bottom_points) - 2, -1, -2):
+            bottom_points_rev.append(bottom_points[i])
+            bottom_points_rev.append(bottom_points[i + 1])
+
+        poly = top_points + bottom_points_rev
+
+        if len(poly) >= 6:
+            # Filled smooth wave shape
+            c.create_polygon(
+                poly,
+                fill="#ffffff",
+                outline="",
+                smooth=True,
+                splinesteps=12,
+            )
+            # Thinner brighter center line for detail
+            center_line = []
+            for i, amp in enumerate(amps):
+                x = i * step
+                offset = max(1, amp * max_half * 0.4)
+                center_line.append(x)
+                center_line.append(mid_y - offset)
+            # Add bottom half
+            for i in range(len(amps) - 1, -1, -1):
+                x = i * step
+                offset = max(1, amps[i] * max_half * 0.4)
+                center_line.append(x)
+                center_line.append(mid_y + offset)
+
+            c.create_polygon(
+                center_line,
+                fill="#e8b4b0",
+                outline="",
+                smooth=True,
+                splinesteps=12,
+            )
 
     def _animate(self, status):
         if self._current_status != status:
@@ -169,13 +316,8 @@ class OverlayApp:
     def _shutdown(self):
         """Graceful shutdown: unregister hotkeys, destroy tkinter, then exit."""
         try:
-            import keyboard
-            for hid in _hotkey_ids:
-                try:
-                    keyboard.remove_hotkey(hid)
-                except (KeyError, ValueError):
-                    pass
-            _hotkey_ids.clear()
+            from dictation.hotkeys import unregister_hotkeys
+            unregister_hotkeys()
         except Exception:
             pass
         try:

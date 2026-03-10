@@ -43,8 +43,9 @@ class HistoryWindow:
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Mouse wheel scrolling
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        # Mouse wheel scrolling (scoped to this window only)
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind("<Enter>", lambda e: self.canvas.focus_set())
         self.win.bind("<Destroy>", self._on_destroy)
 
         self._populate()
@@ -56,8 +57,7 @@ class HistoryWindow:
         self.canvas.yview_scroll(-1 * (event.delta // 120), "units")
 
     def _on_destroy(self, event):
-        if event.widget == self.win:
-            self.canvas.unbind_all("<MouseWheel>")
+        pass
 
     def _populate(self):
         for widget in self.scroll_frame.winfo_children():
@@ -108,7 +108,13 @@ class HistoryWindow:
         try:
             orig_title = self.win.title()
             self.win.title("✓ Скопировано!")
-            self.win.after(1000, lambda: self.win.title(orig_title))
+            self.win.after(1000, lambda t=orig_title: self._safe_set_title(t))
+        except tk.TclError:
+            pass
+
+    def _safe_set_title(self, title):
+        try:
+            self.win.title(title)
         except tk.TclError:
             pass
 

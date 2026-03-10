@@ -86,16 +86,23 @@ def load_config():
 
 def save_config(cfg):
     tmp_path = CONFIG_PATH + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
-    os.replace(tmp_path, CONFIG_PATH)
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, CONFIG_PATH)
+    except OSError as e:
+        print(f"[config] Failed to save config: {e}")
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
 
 
 def get_input_devices():
-    """Return list of (name, name) for capture devices via miniaudio."""
+    """Return list of device names for capture devices via miniaudio."""
     try:
         devs = miniaudio.Devices()
-        return [(d["name"], d["name"]) for d in devs.get_captures()]
+        return [d["name"] for d in devs.get_captures()]
     except Exception:
         return []
 

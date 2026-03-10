@@ -31,13 +31,13 @@ from dictation.ui.overlay import OverlayApp
 
 def background_init():
     """Load models in background thread, then register hotkeys."""
+    asr_ok = True
     try:
         load_asr_model()
     except Exception as e:
+        asr_ok = False
         print(f"[error] Failed to load ASR model: {e}")
         print("[error] Check that the model exists and CUDA is available.")
-        if state.app:
-            state.app.set_status(OverlayApp.STATUS_IDLE)
 
     if state.config.get("llm_enabled", True):
         warmup_llm()
@@ -47,10 +47,17 @@ def background_init():
     hotkey = state.config["hotkey_record"].upper()
     backend = state.config.get("asr_backend", "whisper").capitalize()
     llm = state.config.get("llm_model", "qwen3.5:9b")
-    print(f"\nReady! Press {hotkey} to start/stop dictation.")
-    print(f"  ASR: {backend}  |  LLM: {llm}\n")
-    if state.app:
-        state.app.set_status(OverlayApp.STATUS_IDLE)
+
+    if asr_ok:
+        print(f"\nReady! Press {hotkey} to start/stop dictation.")
+        print(f"  ASR: {backend}  |  LLM: {llm}\n")
+        if state.app:
+            state.app.set_status(OverlayApp.STATUS_IDLE)
+    else:
+        print(f"\n[error] ASR model failed to load. Recording will not work.")
+        print(f"[error] Try changing ASR settings via right-click -> Settings.\n")
+        if state.app:
+            state.app.set_status(OverlayApp.STATUS_LOADING, "(ошибка ASR)")
 
 
 def main():

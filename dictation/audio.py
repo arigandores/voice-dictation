@@ -1,5 +1,6 @@
 """Audio recording and processing pipeline."""
 
+import math
 import time
 import numpy as np
 import miniaudio
@@ -10,6 +11,8 @@ from dictation.config import SAMPLE_RATE, CHANNELS
 from dictation import state
 from dictation.vad import filter_silence
 from dictation.llm import llm_correct
+
+MAX_RECORDING_SECONDS = 300  # 5 minutes
 
 
 def _find_capture_device_id(name):
@@ -31,6 +34,7 @@ def record_audio():
     buf = []
 
     state.stop_recording_event.clear()
+    state.waveform_levels.clear()
 
     device_name = state.config.get("input_device")
     device_id = _find_capture_device_id(device_name)
@@ -38,7 +42,13 @@ def record_audio():
     def capture_gen():
         while True:
             data = yield
-            buf.append(bytes(data))
+            raw = bytes(data)
+            buf.append(raw)
+            # Push RMS amplitude for waveform visualization
+            samples = np.frombuffer(raw, dtype=np.float32)
+            if len(samples) > 0:
+                rms = math.sqrt(np.mean(samples ** 2))
+                state.waveform_levels.append(rms)
 
     cap = miniaudio.CaptureDevice(
         input_format=miniaudio.SampleFormat.FLOAT32,
@@ -58,9 +68,12 @@ def record_audio():
         from dictation.ui.overlay import OverlayApp
         state.app.set_status(OverlayApp.STATUS_RECORDING)
 
+    rec_start = time.time()
     try:
-        while not state.stop_recording_event.is_set():
-            time.sleep(0.05)
+        while not state.stop_recording_event.wait(timeout=0.05):
+            if time.time() - rec_start > MAX_RECORDING_SECONDS:
+                print(f"[rec] Max duration ({MAX_RECORDING_SECONDS}s) reached, stopping")
+                break
     finally:
         with state.recording_lock:
             state.is_recording = False
@@ -86,10 +99,10 @@ def process_recording():
     if not state.processing_lock.acquire(blocking=False):
         return
     try:
-        from dictation import asr as asr_module
+        from dictation import asr
         from dictation.ui.overlay import OverlayApp
 
-        if asr_module._asr_model is None:
+        if not asr.is_loaded():
             print("[skip] ASR model not loaded yet")
             if state.app:
                 state.app.set_status(OverlayApp.STATUS_IDLE)
@@ -109,7 +122,7 @@ def process_recording():
             return
 
         # VAD filtering for Canary backend
-        if asr_module._asr_backend == "canary":
+        if asr.get_backend() == "canary":
             audio = filter_silence(audio)
             if len(audio) < SAMPLE_RATE * 0.3:
                 print("[skip] No speech detected")
@@ -121,8 +134,8 @@ def process_recording():
         if state.app:
             state.app.set_status(OverlayApp.STATUS_TRANSCRIBING)
         t = time.time()
-        backend_tag = "canary" if asr_module._asr_backend == "canary" else "whisper"
-        raw_text = asr_module.transcribe(audio)
+        backend_tag = asr.get_backend() or "whisper"
+        raw_text = asr.transcribe(audio)
         asr_time = time.time() - t
         print(f"[{backend_tag}] ({asr_time:.2f}s) {raw_text}")
 
