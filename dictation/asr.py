@@ -186,7 +186,7 @@ def load_qwen_model():
         "dtype": torch.bfloat16,
         "device_map": "cuda:0",
         "max_inference_batch_size": 1,
-        "max_new_tokens": 256,  # sufficient for short dictation, prevents runaway
+        "max_new_tokens": 512,  # sufficient for ~1 min dictation, prevents runaway
     }
 
     # Use FlashAttention 2 if available, otherwise SDPA
