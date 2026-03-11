@@ -17,6 +17,42 @@ MAX_RECORDING_SECONDS = 300  # 5 minutes
 LIVE_TRANSCRIBE_INTERVAL = 2.0  # seconds between live preview updates
 
 
+def _compress_and_normalize(audio):
+    """Dynamic range compression + normalization using pedalboard (Spotify)."""
+    if len(audio) == 0:
+        return audio
+
+    try:
+        from pedalboard import Compressor, Gain, Limiter, Pedalboard
+
+        board = Pedalboard([
+            Compressor(
+                threshold_db=-20.0,   # compress everything above -20dB
+                ratio=4.0,            # 4:1 compression ratio
+                attack_ms=5.0,        # fast attack for speech
+                release_ms=100.0,     # smooth release
+            ),
+            Gain(gain_db=12.0),       # make-up gain after compression
+            Limiter(
+                threshold_db=-1.0,    # prevent clipping
+                release_ms=50.0,
+            ),
+        ])
+
+        # pedalboard expects (channels, samples) float32
+        processed = board(audio.reshape(1, -1).astype(np.float32), SAMPLE_RATE)
+        audio = processed.flatten()
+        print("[rec] Audio compression applied (pedalboard)")
+    except ImportError:
+        # Fallback: simple peak normalization
+        peak = np.max(np.abs(audio))
+        if peak > 0:
+            audio = audio / peak * 0.95
+        print("[rec] Peak normalization applied (install pedalboard for better results)")
+
+    return audio
+
+
 def _live_transcribe_loop(buf, stop_event):
     """Periodically transcribe the recording buffer for live preview."""
     from dictation import asr
@@ -168,10 +204,8 @@ def process_recording():
             except ImportError:
                 print("[rec] noisereduce not installed, skipping noise reduction")
 
-        # Normalize audio levels (Whisper is not scale-invariant)
-        peak = np.max(np.abs(audio))
-        if peak > 0:
-            audio = audio / peak * 0.95
+        # Dynamic range compression + normalization
+        audio = _compress_and_normalize(audio)
 
         # VAD filtering for Canary backend
         if asr.get_backend() == "canary":

@@ -11,7 +11,7 @@ DEFAULT_CONFIG = {
     "hotkey_record": "ctrl+shift+space",
     "hotkey_quit": "ctrl+shift+q",
     "language": "auto",
-    "asr_backend": "whisper",       # "whisper" or "canary"
+    "asr_backend": "whisper",       # "whisper", "canary", "parakeet", or "qwen"
     "whisper_model": "large-v3",
     "llm_model": "qwen3.5:9b",
     "llm_enabled": True,

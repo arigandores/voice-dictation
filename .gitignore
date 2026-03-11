@@ -19,6 +19,10 @@ dictation_config.json
 *.onnx
 *.safetensors
 
+# Launch script
+start.ps1
+start.bat
+
 # Temp
 *.tmp
 *.wav

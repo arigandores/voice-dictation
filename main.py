@@ -21,12 +21,23 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+import httpx
+
 from dictation import state
 from dictation.config import LANGUAGE_OPTIONS
 from dictation.asr import load_asr_model
 from dictation.llm import warmup_llm
 from dictation.hotkeys import register_hotkeys
 from dictation.ui.overlay import OverlayApp
+
+
+def check_ollama():
+    """Check if Ollama is reachable."""
+    try:
+        resp = httpx.get("http://localhost:11434/api/tags", timeout=1.0)
+        return resp.status_code == 200
+    except Exception:
+        return False
 
 
 def background_init():
@@ -40,7 +51,11 @@ def background_init():
         print("[error] Check that the model exists and CUDA is available.")
 
     if state.config.get("llm_enabled", True):
-        warmup_llm()
+        if not check_ollama():
+            print("[llm] Ollama is not running! LLM correction will be skipped.")
+            print("[llm] Start Ollama and restart the app, or disable LLM in settings.")
+        else:
+            warmup_llm()
 
     register_hotkeys()
 

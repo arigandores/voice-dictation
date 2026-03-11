@@ -1,4 +1,4 @@
-"""ASR backends: Whisper and NVIDIA Canary."""
+"""ASR backends: Whisper, NVIDIA Canary, Parakeet, and Qwen3-ASR."""
 
 import os
 import time
@@ -141,12 +141,113 @@ def transcribe_canary(model, audio_data):
     return text.strip(), None  # Canary doesn't expose per-segment logprob
 
 
+def _configure_parakeet_decoding(model):
+    """Apply default decoding strategy."""
+    model.change_decoding_strategy(model.cfg.decoding)
+    print("[parakeet] Decoding configured: greedy, temperature=1.0")
+
+
+def load_parakeet_model():
+    print("[parakeet] Loading Parakeet-TDT-0.6B-v3...")
+    if state.app:
+        from dictation.ui.overlay import OverlayApp
+        state.app.set_status(OverlayApp.STATUS_LOADING, "(Parakeet)")
+    import nemo.collections.asr as nemo_asr
+    t = time.time()
+    model = nemo_asr.models.ASRModel.from_pretrained("nvidia/parakeet-tdt-0.6b-v3")
+    model = model.to("cuda")
+    model.eval()
+    _configure_parakeet_decoding(model)
+    print(f"[parakeet] Model loaded in {time.time()-t:.1f}s")
+    return model
+
+
+def transcribe_parakeet(model, audio_data):
+    output = model.transcribe(audio=audio_data, verbose=False)
+
+    if isinstance(output, list) and len(output) > 0:
+        item = output[0]
+        text = item.text if hasattr(item, "text") else str(item)
+    else:
+        text = str(output)
+
+    return text.strip(), None
+
+
+def load_qwen_model():
+    print("[qwen] Loading Qwen3-ASR-1.7B...")
+    if state.app:
+        from dictation.ui.overlay import OverlayApp
+        state.app.set_status(OverlayApp.STATUS_LOADING, "(Qwen ASR)")
+    import torch
+    from qwen_asr import Qwen3ASRModel
+
+    kwargs = {
+        "dtype": torch.bfloat16,
+        "device_map": "cuda:0",
+        "max_inference_batch_size": 1,
+        "max_new_tokens": 512,
+    }
+
+    # Use PyTorch built-in SDPA (Flash Attention without extra packages)
+    kwargs["attn_implementation"] = "sdpa"
+    flash_ok = torch.backends.cuda.flash_sdp_enabled()
+    print(f"[qwen] SDPA attention, flash_sdp={flash_ok}")
+
+    t = time.time()
+    model = Qwen3ASRModel.from_pretrained("Qwen/Qwen3-ASR-1.7B", **kwargs)
+    print(f"[qwen] Model loaded in {time.time()-t:.1f}s")
+    return model
+
+
+_QWEN_LANG_MAP = {
+    "ru": "Russian", "en": "English", "zh": "Chinese", "de": "German",
+    "fr": "French", "es": "Spanish", "ja": "Japanese", "ko": "Korean",
+    "uk": "Ukrainian", "ar": "Arabic", "pt": "Portuguese", "it": "Italian",
+    "nl": "Dutch", "pl": "Polish", "tr": "Turkish", "vi": "Vietnamese",
+    "th": "Thai", "hi": "Hindi", "id": "Indonesian", "ms": "Malay",
+    "sv": "Swedish", "da": "Danish", "fi": "Finnish", "cs": "Czech",
+    "el": "Greek", "ro": "Romanian", "hu": "Hungarian", "fa": "Persian",
+    "mk": "Macedonian", "yue": "Cantonese", "fil": "Filipino",
+}
+
+
+def transcribe_qwen(model, audio_data):
+    lang = state.config.get("language", "auto")
+    qwen_lang = _QWEN_LANG_MAP.get(lang) if lang != "auto" else None
+
+    # Build context hint for better recognition of technical terms
+    context = ""
+    custom = state.config.get("custom_prompt_terms", "").strip()
+    if custom:
+        context = f"Technical terms: {custom}"
+
+    results = model.transcribe(
+        audio=(audio_data, SAMPLE_RATE),
+        language=qwen_lang,
+        context=context,
+    )
+
+    if results and len(results) > 0:
+        text = results[0].text
+        if lang == "auto" and hasattr(results[0], "language"):
+            print(f"[qwen] Detected language: {results[0].language}")
+    else:
+        text = ""
+
+    return text.strip(), None
+
+
 def load_asr_model():
     """Load the ASR model based on current config."""
     global _asr_model, _asr_backend
     backend = state.config.get("asr_backend", "whisper")
     if backend == "canary":
         _asr_model = load_canary_model()
+    elif backend == "parakeet":
+        _asr_model = load_parakeet_model()
+    elif backend == "qwen":
+        _asr_model = load_qwen_model()
     else:
         _asr_model = load_whisper_model()
     _asr_backend = backend
@@ -192,6 +293,10 @@ def transcribe(audio_data):
     """Transcribe using the currently loaded ASR backend."""
     if _asr_backend == "canary":
         return transcribe_canary(_asr_model, audio_data)
+    elif _asr_backend == "parakeet":
+        return transcribe_parakeet(_asr_model, audio_data)
+    elif _asr_backend == "qwen":
+        return transcribe_qwen(_asr_model, audio_data)
     else:
         return transcribe_whisper(_asr_model, audio_data)
 

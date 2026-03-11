@@ -36,7 +36,7 @@ class SettingsWindow:
 
         self.asr_var = tk.StringVar(value=state.config.get("asr_backend", "whisper"))
         tk.Label(self.asr_row, text="Движок:", font=("Segoe UI", 10), width=12, anchor="w").pack(side=tk.LEFT)
-        asr_combo = ttk.Combobox(self.asr_row, textvariable=self.asr_var, values=["whisper", "canary"],
+        asr_combo = ttk.Combobox(self.asr_row, textvariable=self.asr_var, values=["whisper", "canary", "parakeet", "qwen"],
                                  state="readonly", font=("Segoe UI", 10), width=15)
         asr_combo.pack(side=tk.LEFT)
         self.asr_hint = tk.Label(self.asr_row, text="", font=("Segoe UI", 8), fg="#888")
@@ -170,6 +170,10 @@ class SettingsWindow:
         backend = self.asr_var.get()
         if backend == "whisper":
             self.asr_hint.config(text="~3s загрузка, авто-язык")
+        elif backend == "parakeet":
+            self.asr_hint.config(text="0.6B, пунктуация, 25 языков")
+        elif backend == "qwen":
+            self.asr_hint.config(text="Qwen3-ASR-1.7B, 30 языков")
         else:
             self.asr_hint.config(text="~20s загрузка, меньше VRAM")
         self._toggle_model_row()
