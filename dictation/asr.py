@@ -186,13 +186,18 @@ def load_qwen_model():
         "dtype": torch.bfloat16,
         "device_map": "cuda:0",
         "max_inference_batch_size": 1,
-        "max_new_tokens": 512,
+        "max_new_tokens": 256,  # sufficient for short dictation, prevents runaway
     }
 
-    # Use PyTorch built-in SDPA (Flash Attention without extra packages)
-    kwargs["attn_implementation"] = "sdpa"
-    flash_ok = torch.backends.cuda.flash_sdp_enabled()
-    print(f"[qwen] SDPA attention, flash_sdp={flash_ok}")
+    # Use FlashAttention 2 if available, otherwise SDPA
+    try:
+        import flash_attn  # noqa: F401
+        kwargs["attn_implementation"] = "flash_attention_2"
+        print("[qwen] Using FlashAttention 2")
+    except ImportError:
+        kwargs["attn_implementation"] = "sdpa"
+        flash_ok = torch.backends.cuda.flash_sdp_enabled()
+        print(f"[qwen] SDPA attention, flash_sdp={flash_ok}")
 
     t = time.time()
     model = Qwen3ASRModel.from_pretrained("Qwen/Qwen3-ASR-1.7B", **kwargs)
@@ -212,15 +217,42 @@ _QWEN_LANG_MAP = {
 }
 
 
+_QWEN_CONTEXT_RU = (
+    "Русская речь с английскими IT-терминами. "
+    "Английские термины писать латиницей: "
+    "API, Docker, Kubernetes, CI/CD, backend, frontend, "
+    "pull request, deploy, endpoint, pipeline, webhook, JSON, REST, git, "
+    "merge, commit, branch, release, staging, production, microservice, "
+    "refactoring, framework, repository, debug, container, server, database, "
+    "Linux, Amazon, AWS, Minecraft, GitHub, Python, Node.js, PostgreSQL, Redis. "
+    "Русифицированные IT-глаголы: задеплоить, захостить, замержить, запушить, "
+    "закоммитить, зарелизить, отдебажить, рефакторить, форкнуть, клонировать."
+)
+
+_QWEN_CONTEXT_EN = (
+    "English speech about software development. "
+    "Preserve spelling of technical terms: "
+    "API, Docker, Kubernetes, CI/CD, backend, frontend, "
+    "pull request, deploy, endpoint, pipeline, webhook, JSON, REST, git."
+)
+
+
 def transcribe_qwen(model, audio_data):
     lang = state.config.get("language", "auto")
-    qwen_lang = _QWEN_LANG_MAP.get(lang) if lang != "auto" else None
+    # Default to Russian for auto — saves tokens and prevents misdetection
+    qwen_lang = _QWEN_LANG_MAP.get(lang) if lang != "auto" else "Russian"
 
-    # Build context hint for better recognition of technical terms
-    context = ""
+    # Build rich context for better recognition
+    if lang in ("ru", "auto"):
+        context = _QWEN_CONTEXT_RU
+    elif lang == "en":
+        context = _QWEN_CONTEXT_EN
+    else:
+        context = ""
+
     custom = state.config.get("custom_prompt_terms", "").strip()
     if custom:
-        context = f"Technical terms: {custom}"
+        context += f" Additional terms: {custom}."
 
     results = model.transcribe(
         audio=(audio_data, SAMPLE_RATE),
@@ -230,8 +262,9 @@ def transcribe_qwen(model, audio_data):
 
     if results and len(results) > 0:
         text = results[0].text
-        if lang == "auto" and hasattr(results[0], "language"):
-            print(f"[qwen] Detected language: {results[0].language}")
+        detected = getattr(results[0], "language", None)
+        if detected:
+            print(f"[qwen] Language: {detected}")
     else:
         text = ""
 
